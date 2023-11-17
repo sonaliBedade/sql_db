@@ -55,45 +55,93 @@ class MyDB:
         if not os.path.exists(file_path):
             print("Error: Table does not exist.")
             return
+    
+        # Handling aggregate functions
+        aggregate_function = None
+        column_to_aggregate = None
+        count, sum_value, min_value, max_value = 0, 0, None, None
 
-        max_col_widths = {col: len(col) for col in columns}
+        select_all_columns = columns == ['*']
+        
+        columns_string = ', '.join(columns) if isinstance(columns, list) else columns
+
+        if not select_all_columns:
+            if columns_string == 'count(*)':
+                aggregate_function = 'count'
+        else:
+            for agg_func in ['count', 'sum', 'avg', 'min', 'max']:
+                if columns_string.startswith(f'{agg_func}('):
+                    aggregate_function = agg_func
+                    column_to_aggregate = columns_string.split('(')[1].strip(')')
+                    break
+
         seen_values = set()
         memory_usage = 0
-        header_processed = False
-        results = []
+        results = []       
 
         with open(file_path, 'r', encoding='utf-8') as file:
-            reader = csv.reader(file)
+            reader = csv.DictReader(file)
+            if select_all_columns:
+                columns = reader.fieldnames
+                max_col_widths = {col: len(col) for col in columns}
+            else:
+                max_col_widths = {col: len(col) for col in columns}
+
             for row in reader:
-                if not header_processed:
-                    header = row
-                    
-                    col_indices = [header.index(col.strip()) for col in columns if col.strip() in header]
-                    if len(col_indices) != len(columns):
-                        print("Error: One or more columns not found.")
-                        return
-                    header_processed = True
+                if where_clause and not self._evaluate_where(row, reader.fieldnames, where_clause):
                     continue
 
-                if where_clause and not self._evaluate_where(row, header, where_clause):
-                    continue
+                # Aggregate function handling
+                if aggregate_function:
+                    if aggregate_function == 'count' and column_to_aggregate == '*':
+                        count += 1
+                        continue
+                    if aggregate_function:
+                        try:
+                            value = float(row[column_to_aggregate])
+                            if aggregate_function == 'sum':
+                                sum_value += value
+                            elif aggregate_function == 'avg':
+                                sum_value += value
+                                count += 1
+                            elif aggregate_function == 'min':
+                                min_value = value if min_value is None else min(min_value, value)
+                            elif aggregate_function == 'max':
+                                max_value = value if max_value is None else max(max_value, value)
+                        except (ValueError, KeyError):
+                            continue
 
-                row_data = tuple(row[i] for i in col_indices)
-                row_memory = sum(sys.getsizeof(item) for item in row_data)
+                else:
+                    row_data = tuple(row[col] for col in columns if col in row)
+                    row_memory = sum(sys.getsizeof(item) for item in row_data)
 
-                if memory_usage + row_memory > memory_limit:
-                    break  # Stop processing if memory limit is exceeded
+                    if memory_usage + row_memory > memory_limit:
+                        break  # Stop processing if memory limit is exceeded
+                
+                    if not distinct or row_data not in seen_values:
+                        results.append(row_data)
+                        memory_usage += row_memory
+                        if distinct:
+                            seen_values.add(row_data)
+                        for i, col in enumerate(columns):
+                            if row_data and i < len(row_data):
+                                max_col_widths[col] = max(max_col_widths[col], len(str(row_data[i])))
 
-                if not distinct or row_data not in seen_values:
-                    results.append(row_data)
-                    memory_usage += row_memory
-                    if distinct:
-                        seen_values.add(row_data)
-                    for i, col in enumerate(columns):
-                        if row_data and i < len(row_data):
-                            max_col_widths[col] = max(max_col_widths[col], len(str(row_data[i])))
+        # Aggregate function results
+        if aggregate_function == 'avg':
+            avg_value = sum_value / count if count > 0 else 0
+            print(f"Avg: {avg_value}")
+        elif aggregate_function == 'count':
+            print(f"Count: {count}")
+        elif aggregate_function == 'sum':
+            print(f"Sum: {sum_value}")
+        elif aggregate_function == 'min':
+            print(f"Min: {min_value}")
+        elif aggregate_function == 'max':
+            print(f"Max: {max_value}")
+        else:
+            self.print_table(columns, max_col_widths, results, memory_usage)
 
-        self.print_table(columns, max_col_widths, results, memory_usage)
 
     def print_table(self, columns, max_col_widths, data_rows, memory_usage):
         border_line = '+' + '+'.join('-' * (max_col_widths[col] + 2) for col in columns) + '+'
@@ -111,28 +159,36 @@ class MyDB:
 
     def _evaluate_where(self, row, header, where_clause):
         try:
-            and_splits = where_clause.split(' and ')
-            all_conditions = []
-
-            for and_cond in and_splits:
-                or_splits = and_cond.split(' or ')
-                or_results = [self._evaluate_condition(row, header, cond.strip()) for cond in or_splits]
-                if any(or_results):
-                    all_conditions.append(True)
-                else:
-                    all_conditions.append(False)
-
-            return all(all_conditions)
+            conditions = where_clause.split(' and ')
+            for condition in conditions:
+                if not self._evaluate_condition(row, header, condition):
+                    return False
+            return True
         except ValueError as e:
             print(f"Error in where clause: {e}")
             return False
 
     def _evaluate_condition(self, row, header, condition):
-        # Check for LIKE condition
-        if ' like ' in condition.lower():
-            return self._evaluate_like_condition(row, header, condition)
+        parts = condition.split()
+
+        if len(parts) < 3:
+            raise ValueError("Invalid condition format")
+
+        column, operator, value = parts[0], parts[1], ' '.join(parts[2:])
+        value = value.strip("'")
+
+        if column in header:
+            column_value = row[column]
+
+            if operator == '=' and column_value == value:
+                return True
+            elif operator == '!=' and column_value != value:
+                return True
+            # Add other operators as needed
+            else:
+                return False
         else:
-            return self._evaluate_single_condition(row, header, condition)
+            raise ValueError(f"Column {column} not found in header")
     
     def _evaluate_like_condition(self, row, header, condition):
         parts = condition.split(' like ')
@@ -197,8 +253,7 @@ class MyDB:
         value = value.strip("'")
 
         if column in header:
-            column_index = header.index(column)
-            row_value = row[column_index]
+            row_value = row[column]
 
             # Handle different operators
             if operator in ('=', '=='):
