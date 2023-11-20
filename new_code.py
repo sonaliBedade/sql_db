@@ -1,6 +1,7 @@
 import os
 import csv
 import sys
+import shutil
 
 class MyDB:
     def __init__(self, db_root_directory="dataset"):
@@ -8,6 +9,82 @@ class MyDB:
         if not os.path.exists(db_root_directory):
             print("Error: Database root directory does not exist.")
             exit(1)
+
+    def create_db(self, dbname):
+        """Creates a new database (folder) with the specified name."""
+        db_path = os.path.join(self.db_root_directory, dbname)
+        if not os.path.exists(db_path):
+            os.makedirs(db_path)
+            print(f"Database '{dbname}' created successfully.")
+        else:
+            print(f"Database '{dbname}' already exists.")
+
+    def use_db(self, dbname):
+        """Switches to the specified database (folder)."""
+        db_path = os.path.join(self.db_root_directory, dbname)
+        if os.path.exists(db_path):
+            self.current_db = db_path
+            print(f"Switched to database '{dbname}'.")
+        else:
+            print(f"Database '{dbname}' does not exist.")
+
+    def create_table(self, table_name):
+        """Creates a new table (CSV file) in the current database."""
+        if not self.current_db:
+            print("No database selected. Use 'use db [dbname]!' to select a database.")
+            return
+
+        table_path = os.path.join(self.current_db, f"{table_name}.csv")
+        if not os.path.exists(table_path):
+            with open(table_path, 'w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                # Optional: Write headers to the CSV file if needed
+                # writer.writerow(['Column1', 'Column2', ...])
+            print(f"Table '{table_name}' created in database '{os.path.basename(self.current_db)}'.")
+        else:
+            print(f"Table '{table_name}' already exists in database '{os.path.basename(self.current_db)}'.")
+
+    def drop_table(self, table_name):
+        """Drops (deletes) a table from the current database."""
+        if not self.current_db:
+            print("No database selected. Use 'use db [dbname]!' to select a database.")
+            return
+
+        table_path = os.path.join(self.current_db, f"{table_name}.csv")
+        if os.path.exists(table_path):
+            os.remove(table_path)
+            print(f"Table '{table_name}' has been removed from database '{os.path.basename(self.current_db)}'.")
+        else:
+            print(f"Table '{table_name}' does not exist in the database '{os.path.basename(self.current_db)}'.")
+
+    def drop_database(self, db_name):
+        """Drops (deletes) the specified database and its directory."""
+        db_path = os.path.join(self.db_root_directory, db_name)
+        if os.path.exists(db_path) and os.path.isdir(db_path):
+            shutil.rmtree(db_path)
+            print(f"Database '{db_name}' has been deleted.")
+
+            # Reset current database if it was the one deleted
+            if self.current_db == db_path:
+                self.current_db = self.db_root_directory
+        else:
+            print(f"Database '{db_name}' does not exist.")
+
+    def insert_into_table(self, table_name, values):
+        """Inserts data into a specified table."""
+        if not self.current_db or self.current_db == self.db_root_directory:
+            print("No database selected. Use 'use db [dbname]!' to select a database.")
+            return
+
+        table_path = os.path.join(self.current_db, f"{table_name}.csv")
+        if not os.path.exists(table_path):
+            print(f"Table '{table_name}' does not exist.")
+            return
+
+        with open(table_path, 'a', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerow(values)
+        print(f"Data added to table '{table_name}'.")
 
     def _table_path(self, table_identifier):
         return os.path.join(self.db_root_directory, f"{table_identifier}.csv")
@@ -64,7 +141,7 @@ class MyDB:
         select_all_columns = columns == ['*']
         
         columns_string = ', '.join(columns) if isinstance(columns, list) else columns
-        #NEW CODE
+        
         if 'min(' in columns_string or 'max(' in columns_string or 'avg(' in columns_string or 'sum(' in columns_string or 'count(' in columns_string:
             if 'min(' in columns_string:
                 aggregate_function = 'min'
@@ -77,7 +154,7 @@ class MyDB:
             else:
                 aggregate_function = 'count'
             column_to_aggregate = columns_string.split('(')[1].split(')')[0]
-        #NEW CODE
+    
         seen_values = set()
         memory_usage = 0
         results = []       
@@ -297,10 +374,31 @@ class MyDB:
         query_parts = query.split()
         command = query_parts[0].lower()
 
-        if command == "insert" and query_parts[1].lower() == "into":
+        if command == "new" and query_parts[1].lower() == "db":
+            dbname = query_parts[2]
+            self.create_db(dbname)
+
+        elif command == "use" and query_parts[1].lower() == "db":
+            dbname = query_parts[2]
+            self.use_db(dbname)
+
+        elif command == "new" and query_parts[1].lower() == "table":
             table_name = query_parts[2]
-            row_data = query_parts[3:]
-            self.insert_into(table_name, row_data)
+            self.create_table(table_name)
+
+        elif command == "rem" and query_parts[1].lower() == "table":
+            table_name = query_parts[2]
+            self.drop_table(table_name)
+
+        elif command == "trash" and query_parts[1].lower() == "db":
+            db_name = query_parts[2]
+            self.drop_database(db_name)
+
+        elif command == "add" and query_parts[1].lower() == "in":
+            table_name = query_parts[2]
+            values_part = query.split('as')[1].strip().strip('()')
+            values = [value.strip() for value in values_part.split(',')]
+            self.insert_into_table(table_name, values)
 
         elif command == "select":
             distinct = "distinct" in query.lower()
